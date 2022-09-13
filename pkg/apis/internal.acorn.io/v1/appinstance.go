@@ -13,11 +13,12 @@ var (
 	AppInstanceConditionNamespace  = "namespace"
 	AppInstanceConditionParsed     = "parsed"
 	AppInstanceConditionController = "controller"
-	AppInstanceConditionPulled     = "pulled"
+	AppInstanceConditionPulled     = "image-pull"
 	AppInstanceConditionSecrets    = "secrets"
 	AppInstanceConditionContainers = "containers"
 	AppInstanceConditionJobs       = "jobs"
 	AppInstanceConditionReady      = "Ready"
+	AppInstanceConditionUpgrade    = "upgrade"
 )
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -54,22 +55,24 @@ const (
 )
 
 type AppInstanceSpec struct {
-	Labels          []ScopedLabel    `json:"labels,omitempty"`
-	Annotations     []ScopedLabel    `json:"annotations,omitempty"`
-	Image           string           `json:"image,omitempty"`
-	Stop            *bool            `json:"stop,omitempty"`
-	DevMode         *bool            `json:"devMode,omitempty"`
-	Profiles        []string         `json:"profiles,omitempty"`
-	Volumes         []VolumeBinding  `json:"volumes,omitempty"`
-	Secrets         []SecretBinding  `json:"secrets,omitempty"`
-	Environment     []NameValue      `json:"environment,omitempty"`
-	PublishMode     PublishMode      `json:"publishMode,omitempty"`
-	TargetNamespace string           `json:"targetNamespace,omitempty"`
-	Links           []ServiceBinding `json:"services,omitempty"`
-	Ports           []PortBinding    `json:"ports,omitempty"`
-	DeployArgs      GenericMap       `json:"deployArgs,omitempty"`
-	Permissions     *Permissions     `json:"permissions,omitempty"`
-	ClusterName     string           `json:"clusterName,omitempty"`
+	Labels              []ScopedLabel    `json:"labels,omitempty"`
+	Annotations         []ScopedLabel    `json:"annotations,omitempty"`
+	Image               string           `json:"image,omitempty"`
+	Stop                *bool            `json:"stop,omitempty"`
+	DevMode             *bool            `json:"devMode,omitempty"`
+	Profiles            []string         `json:"profiles,omitempty"`
+	Volumes             []VolumeBinding  `json:"volumes,omitempty"`
+	Secrets             []SecretBinding  `json:"secrets,omitempty"`
+	Environment         []NameValue      `json:"environment,omitempty"`
+	PublishMode         PublishMode      `json:"publishMode,omitempty"`
+	TargetNamespace     string           `json:"targetNamespace,omitempty"`
+	Links               []ServiceBinding `json:"services,omitempty"`
+	Ports               []PortBinding    `json:"ports,omitempty"`
+	DeployArgs          GenericMap       `json:"deployArgs,omitempty"`
+	Permissions         *Permissions     `json:"permissions,omitempty"`
+	ClusterName         string           `json:"clusterName,omitempty"`
+	AutoUpgrade         string           `json:"autoUpgrade,omitempty"`
+	AutoUpgradeInterval string           `json:"autoUpgradeInterval,omitempty"`
 }
 
 func (in AppInstanceSpec) GetDevMode() bool {
@@ -112,6 +115,7 @@ type JobStatus struct {
 }
 
 type AppColumns struct {
+	Image     string `json:"image,omitempty" column:"name=Image,jsonpath=.status.columns.image"`
 	Healthy   string `json:"healthy,omitempty" column:"name=Healthy,jsonpath=.status.columns.healthy"`
 	UpToDate  string `json:"upToDate,omitempty" column:"name=Up-To-Date,jsonpath=.status.columns.upToDate"`
 	Message   string `json:"message,omitempty" column:"name=Message,jsonpath=.status.columns.message"`
@@ -120,18 +124,20 @@ type AppColumns struct {
 }
 
 type AppInstanceStatus struct {
-	ObservedGeneration int64                      `json:"observedGeneration,omitempty"`
-	Columns            AppColumns                 `json:"columns,omitempty"`
-	ContainerStatus    map[string]ContainerStatus `json:"containerStatus,omitempty"`
-	JobsStatus         map[string]JobStatus       `json:"jobsStatus,omitempty"`
-	Ready              bool                       `json:"ready,omitempty"`
-	Stopped            bool                       `json:"stopped,omitempty"`
-	Namespace          string                     `json:"namespace,omitempty"`
-	AppImage           AppImage                   `json:"appImage,omitempty"`
-	AppSpec            AppSpec                    `json:"appSpec,omitempty"`
-	Conditions         []Condition                `json:"conditions,omitempty"`
-	Endpoints          []Endpoint                 `json:"endpoints,omitempty"`
-	ClusterName        string                     `json:"clusterName,omitempty"`
+	ObservedGeneration     int64                      `json:"observedGeneration,omitempty"`
+	Columns                AppColumns                 `json:"columns,omitempty"`
+	ContainerStatus        map[string]ContainerStatus `json:"containerStatus,omitempty"`
+	JobsStatus             map[string]JobStatus       `json:"jobsStatus,omitempty"`
+	Ready                  bool                       `json:"ready,omitempty"`
+	Stopped                bool                       `json:"stopped,omitempty"`
+	Namespace              string                     `json:"namespace,omitempty"`
+	AppImage               AppImage                   `json:"appImage,omitempty"`
+	AvailableAppImage      string                     `json:"availableAppImage,omitempty"`
+	ConfirmUpgradeAppImage string                     `json:"confirmUpgradeAppImage,omitempty"`
+	AppSpec                AppSpec                    `json:"appSpec,omitempty"`
+	Conditions             []Condition                `json:"conditions,omitempty"`
+	Endpoints              []Endpoint                 `json:"endpoints,omitempty"`
+	ClusterName            string                     `json:"clusterName,omitempty"`
 }
 
 type Endpoint struct {

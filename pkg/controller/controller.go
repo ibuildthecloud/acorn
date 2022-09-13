@@ -5,6 +5,7 @@ import (
 	"time"
 
 	v1 "github.com/acorn-io/acorn/pkg/apis/internal.acorn.io/v1"
+	"github.com/acorn-io/acorn/pkg/autoupgrade"
 	"github.com/acorn-io/acorn/pkg/crds"
 	"github.com/acorn-io/acorn/pkg/dns"
 	"github.com/acorn-io/acorn/pkg/k8sclient"
@@ -67,6 +68,9 @@ func (c *Controller) Start(ctx context.Context) error {
 
 	dnsInit := dns.NewDaemon(c.client)
 	go wait.UntilWithContext(ctx, dnsInit.RenewAndSync, dnsRenewPeriodHours)
+
+	autoUpgrade := autoupgrade.NewDaemon(c.client)
+	go autoUpgrade.StartSync(ctx)
 
 	return c.Router.Start(ctx)
 }

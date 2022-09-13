@@ -41,20 +41,22 @@ func ToApp(namespace, image string, opts *AppRunOptions) *apiv1.App {
 			Labels:      appScoped(opts.Labels),
 		},
 		Spec: v1.AppInstanceSpec{
-			Image:           image,
-			PublishMode:     opts.PublishMode,
-			DeployArgs:      opts.DeployArgs,
-			Volumes:         opts.Volumes,
-			Secrets:         opts.Secrets,
-			Links:           opts.Links,
-			Ports:           opts.Ports,
-			Profiles:        opts.Profiles,
-			DevMode:         opts.DevMode,
-			Permissions:     opts.Permissions,
-			Environment:     opts.Env,
-			Labels:          opts.Labels,
-			Annotations:     opts.Annotations,
-			TargetNamespace: opts.TargetNamespace,
+			Image:               image,
+			PublishMode:         opts.PublishMode,
+			DeployArgs:          opts.DeployArgs,
+			Volumes:             opts.Volumes,
+			Secrets:             opts.Secrets,
+			Links:               opts.Links,
+			Ports:               opts.Ports,
+			Profiles:            opts.Profiles,
+			DevMode:             opts.DevMode,
+			Permissions:         opts.Permissions,
+			Environment:         opts.Env,
+			Labels:              opts.Labels,
+			Annotations:         opts.Annotations,
+			TargetNamespace:     opts.TargetNamespace,
+			AutoUpgrade:         opts.AutoUpgrade,
+			AutoUpgradeInterval: opts.AutoUpgradeInterval,
 		},
 	}
 }
@@ -113,6 +115,12 @@ func ToAppUpdate(ctx context.Context, c Client, name string, opts *AppUpdateOpti
 	}
 	if opts.TargetNamespace != "" {
 		app.Spec.TargetNamespace = opts.TargetNamespace
+	}
+	if opts.AutoUpgrade != "" {
+		app.Spec.AutoUpgrade = opts.AutoUpgrade
+	}
+	if opts.AutoUpgradeInterval != "" {
+		app.Spec.AutoUpgradeInterval = opts.AutoUpgradeInterval
 	}
 
 	return app, nil

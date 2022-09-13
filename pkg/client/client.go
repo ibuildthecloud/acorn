@@ -87,56 +87,62 @@ func New(restConfig *rest.Config, namespace string) (Client, error) {
 }
 
 type AppUpdateOptions struct {
-	Annotations     []v1.ScopedLabel
-	Labels          []v1.ScopedLabel
-	PublishMode     v1.PublishMode
-	Volumes         []v1.VolumeBinding
-	Secrets         []v1.SecretBinding
-	Links           []v1.ServiceBinding
-	Ports           []v1.PortBinding
-	Env             []v1.NameValue
-	Profiles        []string
-	Permissions     *v1.Permissions
-	DeployArgs      map[string]any
-	DevMode         *bool
-	Image           string
-	TargetNamespace string
+	Annotations         []v1.ScopedLabel
+	Labels              []v1.ScopedLabel
+	PublishMode         v1.PublishMode
+	Volumes             []v1.VolumeBinding
+	Secrets             []v1.SecretBinding
+	Links               []v1.ServiceBinding
+	Ports               []v1.PortBinding
+	Env                 []v1.NameValue
+	Profiles            []string
+	Permissions         *v1.Permissions
+	DeployArgs          map[string]any
+	DevMode             *bool
+	Image               string
+	TargetNamespace     string
+	AutoUpgrade         string
+	AutoUpgradeInterval string
 }
 
 type LogOptions apiv1.LogOptions
 
 type AppRunOptions struct {
-	Name            string
-	Annotations     []v1.ScopedLabel
-	Labels          []v1.ScopedLabel
-	PublishMode     v1.PublishMode
-	Volumes         []v1.VolumeBinding
-	Secrets         []v1.SecretBinding
-	Links           []v1.ServiceBinding
-	Ports           []v1.PortBinding
-	Env             []v1.NameValue
-	Profiles        []string
-	TargetNamespace string
-	DeployArgs      map[string]any
-	DevMode         *bool
-	Permissions     *v1.Permissions
+	Name                string
+	Annotations         []v1.ScopedLabel
+	Labels              []v1.ScopedLabel
+	PublishMode         v1.PublishMode
+	Volumes             []v1.VolumeBinding
+	Secrets             []v1.SecretBinding
+	Links               []v1.ServiceBinding
+	Ports               []v1.PortBinding
+	Env                 []v1.NameValue
+	Profiles            []string
+	TargetNamespace     string
+	DeployArgs          map[string]any
+	DevMode             *bool
+	Permissions         *v1.Permissions
+	AutoUpgrade         string
+	AutoUpgradeInterval string
 }
 
 func (a AppRunOptions) ToUpdate() AppUpdateOptions {
 	return AppUpdateOptions{
-		Annotations:     a.Annotations,
-		Labels:          a.Labels,
-		PublishMode:     a.PublishMode,
-		Volumes:         a.Volumes,
-		Secrets:         a.Secrets,
-		Links:           a.Links,
-		Ports:           a.Ports,
-		DeployArgs:      a.DeployArgs,
-		DevMode:         a.DevMode,
-		Profiles:        a.Profiles,
-		Permissions:     a.Permissions,
-		Env:             a.Env,
-		TargetNamespace: a.TargetNamespace,
+		Annotations:         a.Annotations,
+		Labels:              a.Labels,
+		PublishMode:         a.PublishMode,
+		Volumes:             a.Volumes,
+		Secrets:             a.Secrets,
+		Links:               a.Links,
+		Ports:               a.Ports,
+		DeployArgs:          a.DeployArgs,
+		DevMode:             a.DevMode,
+		Profiles:            a.Profiles,
+		Permissions:         a.Permissions,
+		Env:                 a.Env,
+		TargetNamespace:     a.TargetNamespace,
+		AutoUpgrade:         a.AutoUpgrade,
+		AutoUpgradeInterval: a.AutoUpgradeInterval,
 	}
 }
 

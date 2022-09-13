@@ -24,7 +24,7 @@ import (
 	"k8s.io/apiserver/pkg/endpoints/request"
 )
 
-func (s *Strategy) checkRemotePermissions(ctx context.Context, namespace, image string) error {
+func (s *Strategy) checkRemoteAccess(ctx context.Context, namespace, image string) error {
 	keyChain, err := pullsecret.Keychain(ctx, s.client, namespace)
 	if err != nil {
 		return err
@@ -35,7 +35,7 @@ func (s *Strategy) checkRemotePermissions(ctx context.Context, namespace, image 
 		return err
 	}
 
-	_, err = remote.Image(ref, remote.WithContext(ctx), remote.WithAuthFromKeychain(keyChain))
+	_, err = remote.Head(ref, remote.WithContext(ctx), remote.WithAuthFromKeychain(keyChain))
 	if err != nil {
 		return fmt.Errorf("failed to pull %s: %v", image, err)
 	}
@@ -143,16 +143,28 @@ func (s *Strategy) checkRules(ctx context.Context, sar *authv1.SubjectAccessRevi
 	return merr.NewErrors(errs...)
 }
 
-func (s *Strategy) compareAndCheckPermissions(ctx context.Context, perms v1.Permissions, requestedPerms *v1.Permissions) error {
-	if len(perms.ClusterRules) == 0 && len(perms.Rules) == 0 {
+// checkRequestedPermsSatisfyImagePerms checks that the user requested permissions are enough to satisfy the permissions
+// specified by the image's Acornfile
+func (s *Strategy) checkRequestedPermsSatisfyImagePerms(requestedPerms *v1.Permissions, imagePerms v1.Permissions) error {
+	if len(imagePerms.ClusterRules) == 0 && len(imagePerms.Rules) == 0 {
 		return nil
 	}
 
-	if !equality.Semantic.DeepEqual(perms.ClusterRules, requestedPerms.Get().ClusterRules) ||
-		!equality.Semantic.DeepEqual(perms.Rules, requestedPerms.Get().Rules) {
+	if !equality.Semantic.DeepEqual(imagePerms.ClusterRules, requestedPerms.Get().ClusterRules) ||
+		!equality.Semantic.DeepEqual(imagePerms.Rules, requestedPerms.Get().Rules) {
 		return &client.ErrRulesNeeded{
-			Permissions: perms,
+			Permissions: imagePerms,
 		}
+	}
+
+	return nil
+}
+
+// checkPermissionsForPrivilegeEscalation is an actual RBAC check to prevent privilege escalation. The user making the request must have the
+// permissions that they are requesting the app gets
+func (s *Strategy) checkPermissionsForPrivilegeEscalation(ctx context.Context, requestedPerms *v1.Permissions) error {
+	if requestedPerms == nil || (len(requestedPerms.ClusterRules) == 0 && len(requestedPerms.Rules) == 0) {
+		return nil
 	}
 
 	user, ok := request.UserFrom(ctx)
@@ -174,12 +186,12 @@ func (s *Strategy) compareAndCheckPermissions(ctx context.Context, perms v1.Perm
 	}
 
 	var errs []error
-	if err := s.checkRules(ctx, sar, perms.ClusterRules, ""); err != nil {
+	if err := s.checkRules(ctx, sar, requestedPerms.ClusterRules, ""); err != nil {
 		errs = append(errs, err)
 	}
 
 	ns, _ := request.NamespaceFrom(ctx)
-	if err := s.checkRules(ctx, sar, perms.Rules, ns); err != nil {
+	if err := s.checkRules(ctx, sar, requestedPerms.Rules, ns); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -208,21 +220,19 @@ func (s *Strategy) getPermissions(ctx context.Context, namespace, image string) 
 	return result, nil
 }
 
-func (s *Strategy) resolveTag(ctx context.Context, namespace, image string) (string, error) {
+func (s *Strategy) resolveLocalImage(ctx context.Context, namespace, image string) (string, bool, error) {
 	localImage, err := s.clientFactory.Namespace(namespace).ImageGet(ctx, image)
 	if apierrors.IsNotFound(err) {
 		if tags.IsLocalReference(image) {
-			return "", err
+			return "", false, err
 		}
-		if err := s.checkRemotePermissions(ctx, namespace, image); err != nil {
-			return "", err
-		}
+
 	} else if err != nil {
-		return "", err
+		return "", false, err
 	} else {
-		return strings.TrimPrefix(localImage.Digest, "sha256:"), nil
+		return strings.TrimPrefix(localImage.Digest, "sha256:"), true, nil
 	}
-	return image, nil
+	return image, false, nil
 }
 
 func (s *Strategy) createNamespace(ctx context.Context, name string) error {

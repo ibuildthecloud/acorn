@@ -2,6 +2,7 @@ package controller
 
 import (
 	v1 "github.com/acorn-io/acorn/pkg/apis/internal.acorn.io/v1"
+	"github.com/acorn-io/acorn/pkg/autoupgrade"
 	"github.com/acorn-io/acorn/pkg/controller/appdefinition"
 	"github.com/acorn-io/acorn/pkg/controller/dns"
 	"github.com/acorn-io/acorn/pkg/controller/gc"
@@ -32,8 +33,8 @@ func routes(router *router.Router) {
 
 	// DeploySpec will create the namespace, so ensure it runs before anything that requires a namespace
 	appRouter := router.Type(&v1.AppInstance{}).Middleware(appdefinition.RequireNamespace).Middleware(appdefinition.IgnoreTerminatingNamespace)
-	appRouter.Middleware(appdefinition.CheckDependencies).HandlerFunc(appdefinition.DeploySpec)
-	appRouter.HandlerFunc(appdefinition.CreateSecrets)
+	appRouter.Middleware(appdefinition.ImagePulled).Middleware(appdefinition.CheckDependencies).HandlerFunc(appdefinition.DeploySpec)
+	appRouter.Middleware(appdefinition.ImagePulled).HandlerFunc(appdefinition.CreateSecrets)
 	appRouter.HandlerFunc(appdefinition.AppStatus)
 	appRouter.HandlerFunc(appdefinition.AppEndpointsStatus)
 	appRouter.HandlerFunc(appdefinition.JobStatus)
@@ -51,4 +52,5 @@ func routes(router *router.Router) {
 	router.Type(&corev1.Pod{}).Selector(managedSelector).HandlerFunc(gc.GCOrphans)
 	router.Type(&netv1.Ingress{}).Selector(managedSelector).Middleware(dns.RequireLBs).Handler(dns.NewDNSHandler())
 	router.Type(&corev1.ConfigMap{}).Namespace(system.Namespace).Name(system.ConfigName).Handler(dns.NewDNSConfigHandler())
+	router.Type(&corev1.ConfigMap{}).Namespace(system.Namespace).Name(system.ConfigName).HandlerFunc(autoupgrade.HandleAutoUpgradeInterval)
 }

@@ -46,30 +46,51 @@ acorn run [flags] IMAGE|DIRECTORY [acorn args]
 
   # Bind the acorn volume named "mydata" into the current app, replacing the volume named "data", See "acorn volumes --help for more info"
   acorn run --volume mydata:data .
+
+# Automatic upgrades
+  # Automatic upgrade for an app will be enabled if '#', '*', or '**' appears in the image's tag. Tags will sorted according to the rules for these special characters described below. The newest tag will be selected for upgrade.
+
+  # '#' denotes a segment of the image tag that should be sorted numerically when finding the newest tag.
+  # This example deploys the hello-world app with auto-upgrade enabled and matching all major, minor, and patch versions:
+  acorn run myorg/hello-world:v#.#.#
+
+  # '*' denotes a segment of the image tag that should sorted alphabetically when finding the latest tag.
+  # In this example, if you had a tag named alpha and a tag named zeta, zeta would be recognized as the newest:
+  acorn run myorg/hello-world:*
+
+  # '**' denotes a wildcard. This segment of the image tag won't be considered when sorting. This is useful if your tags have a segment that is unpredictable.
+  # This example would sort numerically according to major and minor version (ie v1.2) and ignore anything following the "-":
+  acorn run myorg/hello-world:v#.#-**
+
+  # Automatic upgrades can be configured explicitly via a flag.
+  # In this example, the tag will always be "latest", but acorn will periodically check to see if new content has been pushed to that tag:
+  acorn run --auto-upgrade enabled myorg/hello-world:latest
 ```
 
 ### Options
 
 ```
-      --annotation strings        Add annotations to the app and the resources it creates (format [type:][name:]key=value) (ex k=v, containers:k=v)
-  -b, --bidirectional-sync        In interactive mode download changes in addition to uploading
-  -i, --dev                       Enable interactive dev mode: build image, stream logs/status in the foreground and stop on exit
-  -e, --env strings               Environment variables to set on running containers
-      --expose strings            In cluster expose ports of an application (format [public:]private) (ex 81:80)
-  -f, --file string               Name of the build file (default "DIRECTORY/Acornfile")
-  -h, --help                      help for run
-  -l, --label strings             Add labels to the app and the resources it creates (format [type:][name:]key=value) (ex k=v, containers:k=v)
-      --link strings              Link external app as a service in the current app (format app-name:container-name)
-  -n, --name string               Name of app to create
-  -o, --output string             Output API request without creating app (json, yaml)
-      --profile strings           Profile to assign default values
-  -p, --publish strings           Publish port of application (format [public:]private) (ex 81:80)
-  -P, --publish-all               Publish all (true) or none (false) of the defined ports of application
-  -q, --quiet                     Do not print status
-  -s, --secret strings            Bind an existing secret (format existing:sec-name) (ex: sec-name:app-secret)
-      --target-namespace string   The name of the namespace to be created and deleted for the application resources
-  -v, --volume stringArray        Bind an existing volume (format existing:vol-name,field=value) (ex: pvc-name:app-data)
-      --wait                      Wait for app to become ready before command exiting (default true)
+      --annotation strings             Add annotations to the app and the resources it creates (format [type:][name:]key=value) (ex k=v, containers:k=v)
+      --auto-upgrade string            Enabled automatic upgrades. Values: enabled, notify, disabled (default). Notify will flag apps as having upgrades available in the output of acorn ps
+      --auto-upgrade-interval string   When auto-upgrade is enabled, this is the interval at which to check for new releases
+  -b, --bidirectional-sync             In interactive mode download changes in addition to uploading
+  -i, --dev                            Enable interactive dev mode: build image, stream logs/status in the foreground and stop on exit
+  -e, --env strings                    Environment variables to set on running containers
+      --expose strings                 In cluster expose ports of an application (format [public:]private) (ex 81:80)
+  -f, --file string                    Name of the build file (default "DIRECTORY/Acornfile")
+  -h, --help                           help for run
+  -l, --label strings                  Add labels to the app and the resources it creates (format [type:][name:]key=value) (ex k=v, containers:k=v)
+      --link strings                   Link external app as a service in the current app (format app-name:container-name)
+  -n, --name string                    Name of app to create
+  -o, --output string                  Output API request without creating app (json, yaml)
+      --profile strings                Profile to assign default values
+  -p, --publish strings                Publish port of application (format [public:]private) (ex 81:80)
+  -P, --publish-all                    Publish all (true) or none (false) of the defined ports of application
+  -q, --quiet                          Do not print status
+  -s, --secret strings                 Bind an existing secret (format existing:sec-name) (ex: sec-name:app-secret)
+      --target-namespace string        The name of the namespace to be created and deleted for the application resources
+  -v, --volume stringArray             Bind an existing volume (format existing:vol-name,field=value) (ex: pvc-name:app-data)
+      --wait                           Wait for app to become ready before command exiting (default true)
 ```
 
 ### Options inherited from parent commands

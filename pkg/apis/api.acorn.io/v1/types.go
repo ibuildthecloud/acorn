@@ -329,6 +329,7 @@ type Config struct {
 	InternalClusterDomain        string         `json:"internalClusterDomain" usage:"The Kubernetes internal cluster domain (default svc.cluster.local)" wrangler:"nullable"`
 	AcornDNS                     *string        `json:"acornDNS" name:"acorn-dns" usage:"enabled|disabled|auto. If enabled, containers created by Acorn will get public FQDNs. Auto functions as disabled if a custom clusterDomain has been supplied (default auto)"`
 	AcornDNSEndpoint             *string        `json:"acornDNSEndpoint" name:"acorn-dns-endpoint" usage:"The URL to access the Acorn DNS service"`
+	AutoUpgradeInterval          *string        `json:"autoUpgradeInterval" name:"auto-upgrade-interval" usage:"For apps configured with automatic upgrades enabled, the interval at which to check for new versions. Upgrade intervals configured at the application level cannot be smaller than this. (default '1h' - 1 hour)"`
 }
 
 type EncryptionKey struct {

@@ -6,19 +6,23 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	apiv1 "github.com/acorn-io/acorn/pkg/apis/api.acorn.io/v1"
 	v1 "github.com/acorn-io/acorn/pkg/apis/internal.acorn.io/v1"
+	"github.com/acorn-io/acorn/pkg/autoupgrade"
 	"github.com/acorn-io/acorn/pkg/build"
 	cli "github.com/acorn-io/acorn/pkg/cli/builder"
 	"github.com/acorn-io/acorn/pkg/client"
 	"github.com/acorn-io/acorn/pkg/deployargs"
 	"github.com/acorn-io/acorn/pkg/dev"
 	"github.com/acorn-io/acorn/pkg/rulerequest"
+	"github.com/acorn-io/acorn/pkg/tags"
 	"github.com/acorn-io/acorn/pkg/wait"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/yaml"
 )
 
@@ -60,8 +64,26 @@ func NewRun(out io.Writer) *cobra.Command {
   acorn run --volume mydata,size=5G,class=fast .
 
   # Bind the acorn volume named "mydata" into the current app, replacing the volume named "data", See "acorn volumes --help for more info"
-  acorn run --volume mydata:data .`,
-	})
+  acorn run --volume mydata:data .
+
+# Automatic upgrades
+  # Automatic upgrade for an app will be enabled if '#', '*', or '**' appears in the image's tag. Tags will sorted according to the rules for these special characters described below. The newest tag will be selected for upgrade.
+
+  # '#' denotes a segment of the image tag that should be sorted numerically when finding the newest tag.
+  # This example deploys the hello-world app with auto-upgrade enabled and matching all major, minor, and patch versions:
+  acorn run myorg/hello-world:v#.#.#
+
+  # '*' denotes a segment of the image tag that should sorted alphabetically when finding the latest tag.
+  # In this example, if you had a tag named alpha and a tag named zeta, zeta would be recognized as the newest:
+  acorn run myorg/hello-world:*
+
+  # '**' denotes a wildcard. This segment of the image tag won't be considered when sorting. This is useful if your tags have a segment that is unpredictable.
+  # This example would sort numerically according to major and minor version (ie v1.2) and ignore anything following the "-":
+  acorn run myorg/hello-world:v#.#-**
+
+  # Automatic upgrades can be configured explicitly via a flag.
+  # In this example, the tag will always be "latest", but acorn will periodically check to see if new content has been pushed to that tag:
+  acorn run --auto-upgrade enabled myorg/hello-world:latest`})
 	cmd.PersistentFlags().Lookup("dangerous").Hidden = true
 	cmd.Flags().SetInterspersed(false)
 	return cmd
@@ -78,21 +100,23 @@ type Run struct {
 }
 
 type RunArgs struct {
-	Name            string   `usage:"Name of app to create" short:"n"`
-	File            string   `short:"f" usage:"Name of the build file" default:"DIRECTORY/Acornfile"`
-	Volume          []string `usage:"Bind an existing volume (format existing:vol-name,field=value) (ex: pvc-name:app-data)" short:"v" split:"false"`
-	Secret          []string `usage:"Bind an existing secret (format existing:sec-name) (ex: sec-name:app-secret)" short:"s"`
-	Link            []string `usage:"Link external app as a service in the current app (format app-name:container-name)"`
-	PublishAll      *bool    `usage:"Publish all (true) or none (false) of the defined ports of application" short:"P"`
-	Publish         []string `usage:"Publish port of application (format [public:]private) (ex 81:80)" short:"p"`
-	Expose          []string `usage:"In cluster expose ports of an application (format [public:]private) (ex 81:80)"`
-	Profile         []string `usage:"Profile to assign default values"`
-	Env             []string `usage:"Environment variables to set on running containers" short:"e"`
-	Label           []string `usage:"Add labels to the app and the resources it creates (format [type:][name:]key=value) (ex k=v, containers:k=v)" short:"l"`
-	Annotation      []string `usage:"Add annotations to the app and the resources it creates (format [type:][name:]key=value) (ex k=v, containers:k=v)"`
-	Dangerous       bool     `usage:"Automatically approve all privileges requested by the application"`
-	Output          string   `usage:"Output API request without creating app (json, yaml)" short:"o"`
-	TargetNamespace string   `usage:"The name of the namespace to be created and deleted for the application resources"`
+	Name                string   `usage:"Name of app to create" short:"n"`
+	File                string   `short:"f" usage:"Name of the build file" default:"DIRECTORY/Acornfile"`
+	Volume              []string `usage:"Bind an existing volume (format existing:vol-name,field=value) (ex: pvc-name:app-data)" short:"v" split:"false"`
+	Secret              []string `usage:"Bind an existing secret (format existing:sec-name) (ex: sec-name:app-secret)" short:"s"`
+	Link                []string `usage:"Link external app as a service in the current app (format app-name:container-name)"`
+	PublishAll          *bool    `usage:"Publish all (true) or none (false) of the defined ports of application" short:"P"`
+	Publish             []string `usage:"Publish port of application (format [public:]private) (ex 81:80)" short:"p"`
+	Expose              []string `usage:"In cluster expose ports of an application (format [public:]private) (ex 81:80)"`
+	Profile             []string `usage:"Profile to assign default values"`
+	Env                 []string `usage:"Environment variables to set on running containers" short:"e"`
+	Label               []string `usage:"Add labels to the app and the resources it creates (format [type:][name:]key=value) (ex k=v, containers:k=v)" short:"l"`
+	Annotation          []string `usage:"Add annotations to the app and the resources it creates (format [type:][name:]key=value) (ex k=v, containers:k=v)"`
+	Dangerous           bool     `usage:"Automatically approve all privileges requested by the application"`
+	Output              string   `usage:"Output API request without creating app (json, yaml)" short:"o"`
+	TargetNamespace     string   `usage:"The name of the namespace to be created and deleted for the application resources"`
+	AutoUpgrade         string   `usage:"Enabled automatic upgrades. Values: enabled, notify, disabled (default). Notify will flag apps as having upgrades available in the output of acorn ps"`
+	AutoUpgradeInterval string   `usage:"When auto-upgrade is enabled, this is the interval at which to check for new releases"`
 }
 
 func (s RunArgs) ToOpts() (client.AppRunOptions, error) {
@@ -104,6 +128,13 @@ func (s RunArgs) ToOpts() (client.AppRunOptions, error) {
 	opts.Name = s.Name
 	opts.Profiles = s.Profile
 	opts.TargetNamespace = s.TargetNamespace
+	opts.AutoUpgrade = s.AutoUpgrade
+	opts.AutoUpgradeInterval = s.AutoUpgradeInterval
+
+	opts.AutoUpgrade, err = parseAutoUpgrade(s.AutoUpgrade)
+	if err != nil {
+		return opts, err
+	}
 
 	opts.Volumes, err = v1.ParseVolumes(s.Volume, true)
 	if err != nil {
@@ -161,6 +192,22 @@ func isDirectory(cwd string) (bool, error) {
 		return false, fmt.Errorf("%s is not a directory", cwd)
 	}
 	return true, nil
+}
+
+func parseAutoUpgrade(val string) (string, error) {
+	if val == "" {
+		return "", nil
+	}
+	if strings.EqualFold("enabled", val) || strings.EqualFold("true", val) {
+		return "enabled", nil
+	}
+	if strings.EqualFold("notify", val) {
+		return "notify", nil
+	}
+	if strings.EqualFold("disabled", val) || strings.EqualFold("false", val) {
+		return "disabled", nil
+	}
+	return "", fmt.Errorf("unsupported auto-upgrade value: %v", val)
 }
 
 func buildImage(ctx context.Context, file, cwd string, args, profiles []string) (string, error) {
@@ -237,6 +284,11 @@ func (s *Run) Run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	image, err = resolve(cmd.Context(), c, image)
+	if err != nil {
+		return err
+	}
+
 	if len(args) > 1 {
 		_, flags, err := deployargs.ToFlagsFromImage(cmd.Context(), c, image)
 		if err != nil {
@@ -311,4 +363,21 @@ func outputApp(out io.Writer, format string, app *apiv1.App) error {
 		_, err = out.Write(data)
 	}
 	return err
+}
+
+func resolve(ctx context.Context, c client.Client, image string) (string, error) {
+	if _, pattern := autoupgrade.AutoUpgradePattern(image); pattern {
+		return image, nil
+	}
+	localImage, err := c.ImageGet(ctx, image)
+	if apierrors.IsNotFound(err) {
+		if tags.IsLocalReference(image) {
+			return "", err
+		}
+	} else if err != nil {
+		return "", err
+	} else {
+		return strings.TrimPrefix(localImage.Digest, "sha256:"), nil
+	}
+	return image, nil
 }
