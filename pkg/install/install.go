@@ -6,26 +6,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/mail"
 	"os"
 	"strings"
 
 	apiv1 "github.com/acorn-io/acorn/pkg/apis/api.acorn.io/v1"
-	uiv1 "github.com/acorn-io/acorn/pkg/apis/ui.acorn.io/v1"
 	"github.com/acorn-io/acorn/pkg/config"
 	"github.com/acorn-io/acorn/pkg/install/progress"
-	k8sclient "github.com/acorn-io/acorn/pkg/k8sclient"
+	"github.com/acorn-io/acorn/pkg/k8sclient"
 	labels2 "github.com/acorn-io/acorn/pkg/labels"
 	"github.com/acorn-io/acorn/pkg/podstatus"
-	"github.com/acorn-io/acorn/pkg/prompt"
 	"github.com/acorn-io/acorn/pkg/system"
 	"github.com/acorn-io/acorn/pkg/term"
 	"github.com/acorn-io/acorn/pkg/version"
-	"github.com/acorn-io/acorn/pkg/watcher"
-	"github.com/acorn-io/baaah/pkg/restconfig"
+	"github.com/acorn-io/baaah/pkg/apply"
+	"github.com/acorn-io/baaah/pkg/router"
 	"github.com/acorn-io/baaah/pkg/typed"
+	"github.com/acorn-io/baaah/pkg/watcher"
 	"github.com/pterm/pterm"
-	"github.com/rancher/wrangler/pkg/apply"
 	"github.com/rancher/wrangler/pkg/merr"
 	"github.com/rancher/wrangler/pkg/yaml"
 	"golang.org/x/sync/errgroup"
@@ -61,7 +58,6 @@ type Options struct {
 	APIServerReplicas  *int
 	ControllerReplicas *int
 	Config             apiv1.Config
-	Mode               uiv1.InstallMode
 	Progress           progress.Builder
 }
 
@@ -69,10 +65,6 @@ func (o *Options) complete() *Options {
 	if o == nil {
 		o := &Options{}
 		return o.complete()
-	}
-
-	if o.Mode == "" {
-		o.Mode = uiv1.InstallModeBoth
 	}
 
 	if o.Progress == nil {
@@ -102,50 +94,11 @@ func DefaultImage() string {
 	return image
 }
 
-func validMailAddress(address string) (string, bool) {
-	addr, err := mail.ParseAddress(address)
-	if err != nil {
-		return "", false
-	}
-	return addr.Address, true
-}
-
 func Install(ctx context.Context, image string, opts *Options) error {
 	// I don't want these errors on the screen. Probably a better way to do this.
 	klog.SetOutput(io.Discard)
 	klogv2.SetOutput(io.Discard)
 	utilruntime.ErrorHandlers = nil
-
-	// Require E-Mail address when using Let's Encrypt production
-	if opts.Config.LetsEncrypt != nil && *opts.Config.LetsEncrypt == "enabled" {
-		if opts.Config.LetsEncryptTOSAgree == nil || !*opts.Config.LetsEncryptTOSAgree {
-			ok, err := prompt.Bool("You are choosing to enable Let's Encrypt for TLS certificates. To do so, you must agree to their Terms of Service: https://letsencrypt.org/documents/LE-SA-v1.3-September-21-2022.pdf\nTip: use --lets-encrypt-tos-agree to skip this prompt\nDo you agree to Let's Encrypt TOS?", false)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return fmt.Errorf("you must agree to Let's Encrypt TOS when enabling Let's Encrypt")
-			}
-			opts.Config.LetsEncryptTOSAgree = &ok
-		}
-		if opts.Config.LetsEncryptEmail == "" {
-			result, err := pterm.DefaultInteractiveTextInput.WithMultiLine(false).Show("Enter your email address for Let's Encrypt")
-			if err != nil {
-				return err
-			}
-			opts.Config.LetsEncryptEmail = result
-		}
-		pterm.Info.Println("You've enabled automatic TLS certificate provisioning with Let's Encrypt. This can take a few minutes to configure.")
-	}
-
-	// Validate E-Mail address provided for Let's Encrypt registration
-	if opts.Config.LetsEncryptEmail != "" || (opts.Config.LetsEncrypt != nil && *opts.Config.LetsEncrypt == "enabled") {
-		mail, ok := validMailAddress(opts.Config.LetsEncryptEmail)
-		if !ok {
-			return fmt.Errorf("invalid email address '%s' provided for Let's Encrypt", opts.Config.LetsEncryptEmail)
-		}
-		opts.Config.LetsEncryptEmail = mail
-	}
 
 	opts = opts.complete()
 	if opts.OutputFormat != "" {
@@ -164,29 +117,8 @@ func Install(ctx context.Context, image string, opts *Options) error {
 				}
 			}
 			s.SuccessWithWarning(msg)
-
 		} else {
 			s.Success()
-		}
-	}
-
-	kclient, err := k8sclient.Default()
-	if err != nil {
-		return err
-	}
-
-	var installIngressController bool
-	if ok, err := config.IsDockerDesktop(ctx, kclient); err != nil {
-		return err
-	} else if ok {
-		if opts.Config.IngressClassName == nil {
-			installIngressController, err = missingIngressClass(ctx, kclient)
-			if err != nil {
-				return err
-			}
-			if installIngressController {
-				opts.Config.IngressClassName = &[]string{"traefik"}[0]
-			}
 		}
 	}
 
@@ -195,46 +127,48 @@ func Install(ctx context.Context, image string, opts *Options) error {
 		return err
 	}
 
-	if opts.Mode.DoConfig() {
-		c, err := k8sclient.Default()
-		if err != nil {
-			return err
-		}
-		if err := config.Set(ctx, c, &opts.Config); err != nil {
+	c, err := k8sclient.Default()
+	if err != nil {
+		return err
+	}
+	if err := config.Set(ctx, c, &opts.Config); err != nil {
+		return err
+	}
+
+	s := opts.Progress.New("Installing ClusterRoles")
+	if err := applyRoles(ctx, apply); err != nil {
+		return s.Fail(err)
+	}
+	s.Success()
+
+	kclient, err := k8sclient.Default()
+	if err != nil {
+		return err
+	}
+
+	s = opts.Progress.New(fmt.Sprintf("Installing APIServer and Controller (image %s)", image))
+	if err := applyDeployments(ctx, image, *opts.APIServerReplicas, *opts.ControllerReplicas, apply, kclient); err != nil {
+		return s.Fail(err)
+	}
+	s.Success()
+
+	if ok, err := config.IsDockerDesktop(ctx, kclient); err != nil {
+		return err
+	} else if ok {
+		if err := installTraefik(ctx, opts.Progress, kclient, apply); err != nil {
 			return err
 		}
 	}
 
-	if opts.Mode.DoResources() {
-		s := opts.Progress.New("Installing ClusterRoles")
-		if err := applyRoles(apply); err != nil {
-			return s.Fail(err)
-		}
-		s.Success()
-
-		s = opts.Progress.New(fmt.Sprintf("Installing APIServer and Controller (image %s)", image))
-		if err := applyDeployments(image, *opts.APIServerReplicas, *opts.ControllerReplicas, apply); err != nil {
-			return s.Fail(err)
-		}
-		s.Success()
-
-		if installIngressController {
-			if err := installTraefik(ctx, opts.Progress, kclient, apply); err != nil {
-				return err
-			}
-		}
-
-		if err := waitController(ctx, opts.Progress, *opts.ControllerReplicas, image, kclient); err != nil {
-			return err
-		}
-
-		if err := waitAPI(ctx, opts.Progress, *opts.APIServerReplicas, image, kclient); err != nil {
-			return err
-		}
-
+	if err := waitController(ctx, opts.Progress, *opts.ControllerReplicas, image, kclient); err != nil {
+		return err
 	}
 
-	s := opts.Progress.New("Running Post-install Checks")
+	if err := waitAPI(ctx, opts.Progress, *opts.APIServerReplicas, image, kclient); err != nil {
+		return err
+	}
+
+	s = opts.Progress.New("Running Post-install Checks")
 	checkResults := PostInstallChecks(ctx, checkOpts)
 	if IsFailed(checkResults) {
 		msg := "Post-install checks failed. Use `acorn check` to debug or `acorn install --checks=false` to skip"
@@ -244,55 +178,41 @@ func Install(ctx context.Context, image string, opts *Options) error {
 			}
 		}
 		s.SuccessWithWarning(msg)
-	} else {
-		s.Success()
 	}
-	s.Success()
 
 	pterm.Success.Println("Installation done")
 	return nil
 }
 
 func TraefikResources() (result []kclient.Object, _ error) {
-	objs, err := traefikResources()
-	if err != nil {
-		return nil, err
-	}
-	return typed.MapSlice(objs, func(obj runtime.Object) kclient.Object {
-		return obj.(kclient.Object)
-	}), nil
-}
-
-func traefikResources() (result []runtime.Object, _ error) {
 	objs, err := objectsFromFile("traefik.yaml")
 	if err != nil {
 		return nil, err
 	}
 	for _, obj := range objs {
-		m, err := meta.Accessor(obj)
-		if err != nil {
-			return nil, err
-		}
+		if obj.GetObjectKind().GroupVersionKind().Kind == "IngressClass" {
+			m, err := meta.Accessor(obj)
+			if err != nil {
+				return nil, err
+			}
 
-		labels := m.GetLabels()
-		if labels == nil {
-			labels = map[string]string{}
-		}
-		labels[labels2.AcornManaged] = "true"
-		m.SetLabels(labels)
+			anno := m.GetAnnotations()
+			if anno == nil {
+				anno = map[string]string{}
+			}
+			anno["ingressclass.kubernetes.io/is-default-class"] = "true"
+			m.SetAnnotations(anno)
 
+			labels := m.GetLabels()
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			labels[labels2.AcornManaged] = "true"
+			m.SetLabels(labels)
+		}
 	}
 
 	return objs, nil
-}
-
-func missingIngressClass(ctx context.Context, client kclient.Client) (bool, error) {
-	ingressClassList := &networkingv1.IngressClassList{}
-	err := client.List(ctx, ingressClassList)
-	if err != nil {
-		return false, err
-	}
-	return len(ingressClassList.Items) <= 0, nil
 }
 
 func installTraefik(ctx context.Context, p progress.Builder, client kclient.WithWatch, apply apply.Apply) (err error) {
@@ -301,12 +221,21 @@ func installTraefik(ctx context.Context, p progress.Builder, client kclient.With
 		_ = pb.Fail(err)
 	}()
 
-	objs, err := traefikResources()
+	ingressClassList := &networkingv1.IngressClassList{}
+	err = client.List(ctx, ingressClassList)
+	if err != nil {
+		return err
+	}
+	if len(ingressClassList.Items) > 0 {
+		return nil
+	}
+
+	objs, err := TraefikResources()
 	if err != nil {
 		return err
 	}
 
-	return apply.WithSetID("acorn-install-traefik").WithDefaultNamespace(system.Namespace).ApplyObjects(objs...)
+	return apply.WithOwnerSubContext("acorn-install-traefik").WithNamespace(system.Namespace).Apply(ctx, nil, objs...)
 }
 
 func waitDeployment(ctx context.Context, s progress.Progress, client kclient.WithWatch, imageName, name string, scale int32) error {
@@ -393,8 +322,8 @@ func AllResources() (result []kclient.Object, _ error) {
 	return
 }
 
-func resources(image string, opts *Options) ([]runtime.Object, error) {
-	var objs []runtime.Object
+func resources(image string, opts *Options) ([]kclient.Object, error) {
+	var objs []kclient.Object
 
 	roles, err := Roles()
 	if err != nil {
@@ -438,7 +367,9 @@ func printObject(image string, opts *Options) error {
 		return enc.Encode(m)
 	}
 
-	data, err := yaml.Export(objs...)
+	data, err := yaml.Export(typed.MapSlice(objs, func(t kclient.Object) runtime.Object {
+		return t
+	})...)
 	if err != nil {
 		return err
 	}
@@ -447,7 +378,27 @@ func printObject(image string, opts *Options) error {
 	return err
 }
 
-func applyDeployments(imageName string, apiServerReplicas, controllerReplicas int, apply apply.Apply) error {
+func resetNamespace(ctx context.Context, c kclient.Client) error {
+	ns := &corev1.Namespace{}
+	err := c.Get(ctx, router.Key("", system.Namespace), ns)
+	if apierror.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if ns.Labels[apply.LabelHash] == "9df1d588ddd6e2cf9585be17cd3442d14cfa76ca" {
+		delete(ns.Labels, apply.LabelHash)
+		return c.Update(ctx, ns)
+	}
+	return nil
+}
+
+func applyDeployments(ctx context.Context, imageName string, apiServerReplicas, controllerReplicas int, apply apply.Apply, c kclient.Client) error {
+	// handle upgrade from <= v0.3.x
+	if err := resetNamespace(ctx, c); err != nil {
+		return err
+	}
+
 	objs, err := Namespace()
 	if err != nil {
 		return err
@@ -459,15 +410,15 @@ func applyDeployments(imageName string, apiServerReplicas, controllerReplicas in
 	}
 
 	objs = append(objs, deps...)
-	return apply.ApplyObjects(objs...)
+	return apply.Apply(ctx, nil, objs...)
 }
 
-func applyRoles(apply apply.Apply) error {
+func applyRoles(ctx context.Context, apply apply.Apply) error {
 	objs, err := Roles()
 	if err != nil {
 		return err
 	}
-	err = apply.ApplyObjects(objs...)
+	err = apply.Apply(ctx, nil, objs...)
 	if err != nil {
 		if merrs, ok := err.(merr.Errors); ok {
 			for _, err := range merrs {
@@ -481,19 +432,19 @@ func applyRoles(apply apply.Apply) error {
 	return nil
 }
 
-func Config(cfg apiv1.Config) ([]runtime.Object, error) {
+func Config(cfg apiv1.Config) ([]kclient.Object, error) {
 	cfgObj, err := config.AsConfigMap(&cfg)
 	if err != nil {
 		return nil, err
 	}
-	return []runtime.Object{cfgObj}, nil
+	return []kclient.Object{cfgObj}, nil
 }
 
-func Namespace() ([]runtime.Object, error) {
+func Namespace() ([]kclient.Object, error) {
 	return objectsFromFile("namespace.yaml")
 }
 
-func Deployments(runtimeImage string, apiServerReplicas, controllerReplicas int) ([]runtime.Object, error) {
+func Deployments(runtimeImage string, apiServerReplicas, controllerReplicas int) ([]kclient.Object, error) {
 	apiServerObjects, err := objectsFromFile("apiserver.yaml")
 	if err != nil {
 		return nil, err
@@ -517,7 +468,7 @@ func Deployments(runtimeImage string, apiServerReplicas, controllerReplicas int)
 	return replaceImage(runtimeImage, append(apiServerObjects, controllerObjects...))
 }
 
-func replaceReplicas(replicas int, objs []runtime.Object) ([]runtime.Object, error) {
+func replaceReplicas(replicas int, objs []kclient.Object) ([]kclient.Object, error) {
 	for _, obj := range objs {
 		ustr := obj.(*unstructured.Unstructured)
 		if ustr.GetKind() == "Deployment" {
@@ -530,7 +481,7 @@ func replaceReplicas(replicas int, objs []runtime.Object) ([]runtime.Object, err
 	return objs, nil
 }
 
-func replaceImage(image string, objs []runtime.Object) ([]runtime.Object, error) {
+func replaceImage(image string, objs []kclient.Object) ([]kclient.Object, error) {
 	for _, obj := range objs {
 		ustr := obj.(*unstructured.Unstructured)
 		if ustr.GetKind() == "Deployment" {
@@ -549,32 +500,36 @@ func replaceImage(image string, objs []runtime.Object) ([]runtime.Object, error)
 	return objs, nil
 }
 
-func Roles() ([]runtime.Object, error) {
+func Roles() ([]kclient.Object, error) {
 	return objectsFromFile("role.yaml")
 }
 
 func newApply(ctx context.Context) (apply.Apply, error) {
-	cfg, err := restconfig.Default()
+	c, err := k8sclient.Default()
 	if err != nil {
 		return nil, err
 	}
 
-	apply, err := apply.NewForConfig(cfg)
+	apply := apply.New(c)
 	if err != nil {
 		return nil, err
 	}
-	return apply.
-		WithContext(ctx).
-		WithDynamicLookup().
-		WithSetID("acorn-install"), nil
+	return apply.WithOwnerSubContext("acorn-install"), nil
 }
 
-func objectsFromFile(name string) ([]runtime.Object, error) {
+func objectsFromFile(name string) (result []kclient.Object, _ error) {
 	f, err := files.Open(name)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	return yaml.ToObjects(f)
+	objs, err := yaml.ToObjects(f)
+	if err != nil {
+		return nil, err
+	}
+	for _, obj := range objs {
+		result = append(result, obj.(kclient.Object))
+	}
+	return result, nil
 }
