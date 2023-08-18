@@ -50,13 +50,18 @@ func lookup(ctx context.Context, opts Options) (client.Client, error) {
 		projects = []string{system.DefaultUserNamespace}
 	}
 
-	var clients []client.Client
+	var (
+		clients      []client.Client
+		projectNames []string
+	)
+
 	for _, project := range projects {
 		client, err := getClient(ctx, cfg, opts, project)
 		if err != nil {
 			return nil, err
 		}
 		clients = append(clients, client)
+		projectNames = append(projectNames, client.GetProject())
 	}
 
 	defaultProject := ""
@@ -64,7 +69,7 @@ func lookup(ctx context.Context, opts Options) (client.Client, error) {
 		defaultProject = clients[0].GetProject()
 	}
 
-	return client.NewMultiClient(strings.Join(projects, ","), "", &projectClientFactory{
+	return client.NewMultiClient(strings.Join(projectNames, ","), "", &projectClientFactory{
 		defaultProject: defaultProject,
 		clients:        clients,
 		cfg:            cfg,
@@ -181,11 +186,21 @@ func getDesiredProjects(ctx context.Context, cfg *config.CLIConfig, opts Options
 	return result, nil
 }
 
+func fullyQualifiedProjectName(server, account, namespace string) string {
+	parts := []string{server, account, namespace}
+	if account == "" {
+		parts = []string{server, namespace}
+	}
+	return strings.Join(parts, "/")
+}
+
 func getClient(ctx context.Context, cfg *config.CLIConfig, opts Options, project string) (client.Client, error) {
 	server, account, namespace, isKubeconfig, err := ParseProject(project, cfg.DefaultContext)
 	if err != nil {
 		return nil, err
 	}
+
+	project = fullyQualifiedProjectName(server, account, namespace)
 
 	if isKubeconfig {
 		c, err := restconfig.FromFile(opts.Kubeconfig, opts.ContextEnv)
